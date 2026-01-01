@@ -171,7 +171,7 @@ function App() {
     <div className="app">
       <div className="sidebar">
         <div className="sidebar-header">
-          <h1>Journal</h1>
+          <h1>✨ Flow</h1>
           <button className="new-entry-btn" onClick={createNewEntry}>
             + New Entry
           </button>
@@ -180,9 +180,8 @@ function App() {
           {entries.map((entry) => (
             <div
               key={entry.filename}
-              className={`entry-item ${
-                selectedEntry === entry.filename ? "active" : ""
-              }`}
+              className={`entry-item ${selectedEntry === entry.filename ? "active" : ""
+                }`}
               onClick={() => handleEntryClick(entry.filename)}
             >
               <div className="entry-item-content">
