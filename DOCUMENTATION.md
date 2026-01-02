@@ -4,10 +4,11 @@
 
 A privacy-first, fully local journaling application for macOS built with Tauri 2, React, and TypeScript. All journal entries are stored as plain markdown files with YAML frontmatter in the local file system.
 
-**Version:** 1.0
+**Version:** 1.1
 **Platform:** macOS
-**Tech Stack:** Tauri 2, React, TypeScript, Rust
+**Tech Stack:** Tauri 2, React, TypeScript, Rust, Whisper (local)
 **Data Storage:** Plain markdown files in `~/Documents/Project Data Files/Journal/`
+**Whisper Model:** `~/Documents/Project Data Files/Journal/models/ggml-base.en.bin`
 
 ## Screenshot
 
@@ -19,9 +20,10 @@ A privacy-first, fully local journaling application for macOS built with Tauri 2
 
 1. **Privacy First:** All data stored locally, no cloud sync, no telemetry
 2. **Future-Proof Storage:** Plain markdown files that can be read by any text editor
-3. **Simplicity:** Minimal features for v1 - no encryption, no password, no Touch ID
+3. **Simplicity:** Clean, focused feature set without unnecessary complexity
 4. **Blog-Style Interface:** Distraction-free writing experience with clean, centered layout
 5. **Auto-Save:** Changes automatically saved with 1-second debounce
+6. **Voice-First Optional:** Local Whisper transcription for voice memos and dictation
 
 ## Architecture
 
@@ -30,10 +32,18 @@ journal-app/
 ├── src/                          # React frontend
 │   ├── App.tsx                   # Main application component
 │   ├── App.css                   # Application styles
-│   └── main.tsx                  # React entry point
+│   ├── main.tsx                  # React entry point
+│   └── hooks/                    # Custom React hooks
+│       ├── useWhisperModel.ts    # Whisper model download/status
+│       ├── useVoiceRecording.ts  # Push-to-talk recording
+│       └── useAudioImport.ts     # Audio file import
 ├── src-tauri/                    # Rust backend
 │   ├── src/
-│   │   └── lib.rs                # Tauri commands and file operations
+│   │   ├── lib.rs                # Tauri commands and file operations
+│   │   ├── whisper_model.rs      # Whisper model management
+│   │   ├── audio_recorder.rs     # Microphone recording
+│   │   ├── audio_import.rs       # Audio format conversion
+│   │   └── transcription.rs      # Whisper transcription
 │   ├── Cargo.toml                # Rust dependencies
 │   └── tauri.conf.json           # Tauri configuration
 └── package.json                  # Node.js dependencies
@@ -77,11 +87,29 @@ It can contain any markdown formatting.
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-fs = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-global-shortcut = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = "0.4"
 dirs = "5.0"
 regex = "1"
+
+# Audio recording
+cpal = "0.15"
+hound = "3.5"
+
+# Whisper transcription
+whisper-rs = "0.12"
+
+# Audio format conversion
+symphonia = { version = "0.5", features = ["mp3", "aac", "isomp4"] }
+
+# Async & utilities
+tokio = { version = "1", features = ["sync"] }
+once_cell = "1.19"
+reqwest = { version = "0.11", features = ["stream"] }
+futures-util = "0.3"
 ```
 
 ### Data Structures
@@ -184,15 +212,100 @@ let new_filename = if title.trim().is_empty() {
 
 ```rust
 .invoke_handler(tauri::generate_handler![
+    // Journal commands
     list_entries,
     read_entry,
     save_entry,
     create_entry,
     rename_entry,
     update_entry_metadata,
-    delete_entry
+    delete_entry,
+    // Voice commands
+    whisper_model::check_whisper_model,
+    whisper_model::download_whisper_model,
+    start_recording,
+    stop_recording_and_transcribe,
+    transcribe_audio_file
 ])
 ```
+
+## Voice Features Implementation (Rust)
+
+### Whisper Model Management (`whisper_model.rs`)
+
+**Model Storage:** `~/Documents/Project Data Files/Journal/models/ggml-base.en.bin`
+**Model Size:** ~142MB (base.en - English only, good accuracy/speed balance)
+**Model URL:** `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.en.bin`
+
+#### Commands
+
+##### `check_whisper_model() -> Result<bool, String>`
+- Checks if model file exists and is valid (>100MB)
+- Returns true if model is ready for use
+
+##### `download_whisper_model(window: Window) -> Result<(), String>`
+- Downloads model from HuggingFace with progress tracking
+- Emits `whisper-download-progress` events (0-100)
+- Creates models directory if needed
+- Verifies download integrity
+
+### Audio Recording (`audio_recorder.rs`)
+
+Uses thread-safe architecture to work with Tauri's state management.
+
+#### Key Components
+
+```rust
+pub struct SharedSamples {
+    samples: Mutex<Vec<f32>>,
+    is_recording: AtomicBool,
+}
+```
+
+##### `start_recording_thread(shared: Arc<SharedSamples>) -> Result<JoinHandle<()>, String>`
+- Spawns background thread for recording
+- Uses `cpal` for cross-platform microphone access
+- Records at 16kHz mono (Whisper's required format)
+- Automatically converts stereo to mono
+- Resamples if device doesn't support 16kHz
+
+### Audio Import (`audio_import.rs`)
+
+##### `convert_to_whisper_format(path: &Path) -> Result<Vec<f32>, String>`
+- Converts MP3, M4A, WAV, OGG, FLAC, AAC to Whisper format
+- Uses `symphonia` for decoding
+- Converts to 16kHz mono f32 samples
+- Handles stereo-to-mono conversion
+- Resamples using linear interpolation
+
+### Transcription (`transcription.rs`)
+
+Uses lazy-loaded global Whisper context for efficiency.
+
+```rust
+static WHISPER_CTX: Lazy<Mutex<Option<WhisperContext>>> = Lazy::new(|| Mutex::new(None));
+```
+
+##### `transcribe_audio(samples: &[f32]) -> Result<String, String>`
+- Transcribes 16kHz mono f32 samples
+- Uses greedy sampling strategy
+- English-only for speed
+- Returns concatenated segment text
+
+### Voice Tauri Commands (lib.rs)
+
+##### `start_recording(state: State<RecorderState>) -> Result<(), String>`
+- Starts microphone recording in background thread
+- Returns error if already recording
+
+##### `stop_recording_and_transcribe(state: State<RecorderState>) -> Result<String, String>`
+- Stops recording and waits for thread to finish
+- Transcribes recorded audio
+- Returns transcribed text
+
+##### `transcribe_audio_file(path: String) -> Result<String, String>`
+- Converts audio file to Whisper format
+- Transcribes and returns text
 
 ## Frontend Implementation (React + TypeScript)
 
@@ -321,6 +434,64 @@ The delete functionality uses a custom React modal instead of the native `confir
 
 ### UI Components
 
+### Voice Hooks (`src/hooks/`)
+
+#### `useWhisperModel.ts`
+
+```typescript
+function useWhisperModel() {
+  return {
+    isModelReady: boolean,      // Model downloaded and valid
+    isDownloading: boolean,     // Download in progress
+    downloadProgress: number,   // 0-100
+    downloadModel: () => void,  // Trigger download
+    error: string | null,
+  };
+}
+```
+
+- Checks model status on mount
+- Listens for `whisper-download-progress` events
+- Triggers download via `download_whisper_model` command
+
+#### `useVoiceRecording.ts`
+
+```typescript
+function useVoiceRecording({ onTranscription, isModelReady }) {
+  return {
+    state: 'idle' | 'recording' | 'transcribing',
+    isRecording: boolean,
+    isTranscribing: boolean,
+    recordingDuration: number,   // Seconds
+    formattedDuration: string,   // "0:00" format
+    startRecording: () => void,
+    stopRecording: () => void,
+    error: string | null,
+  };
+}
+```
+
+- Manages recording state machine
+- Tracks recording duration with timer
+- Registers global shortcut `Cmd+Shift+R` (hold to record)
+- Calls `onTranscription` callback with result
+
+#### `useAudioImport.ts`
+
+```typescript
+function useAudioImport({ onTranscription, isModelReady }) {
+  return {
+    importAudioFile: () => void,  // Opens file dialog
+    isImporting: boolean,
+    error: string | null,
+  };
+}
+```
+
+- Opens file dialog with audio filters (mp3, m4a, wav, ogg, flac, aac)
+- Calls `transcribe_audio_file` command
+- Calls `onTranscription` callback with result
+
 #### Layout Structure
 
 ```
@@ -328,7 +499,8 @@ app (flexbox container)
 ├── sidebar
 │   ├── sidebar-header
 │   │   ├── h1 (Journal)
-│   │   └── new-entry-btn
+│   │   ├── new-entry-btn
+│   │   └── import-audio-btn          # NEW
 │   └── entry-list
 │       └── entry-item (multiple)
 │           ├── entry-item-content
@@ -340,7 +512,12 @@ app (flexbox container)
 │       ├── blog-header
 │       │   ├── blog-title (input)
 │       │   ├── blog-date (input)
-│       │   └── saving-indicator
+│       │   ├── saving-indicator
+│       │   ├── voice-controls         # NEW
+│       │   │   ├── download-model-btn (if model not ready)
+│       │   │   ├── record-btn (if model ready)
+│       │   │   └── shortcut-hint
+│       │   └── voice-error (conditional)
 │       └── blog-content
 │           └── blog-editor (textarea)
 └── modal-overlay (conditional)
@@ -748,6 +925,72 @@ Uses an SVG trash icon instead of text character for better visual consistency.
 }
 ```
 
+### Voice Controls Styling
+
+```css
+.voice-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.record-btn {
+  padding: 12px 24px;
+  background-color: #007aff;
+  color: white;
+  border: none;
+  border-radius: 24px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.record-btn.recording {
+  background-color: #ff3b30;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.record-btn.recording::before {
+  content: '';
+  width: 10px;
+  height: 10px;
+  background-color: white;
+  border-radius: 50%;
+  animation: blink 1s ease-in-out infinite;
+}
+
+.import-audio-btn {
+  width: 100%;
+  padding: 8px 16px;
+  background-color: #5856d6;
+  color: white;
+  border-radius: 6px;
+  margin-top: 8px;
+}
+
+.download-model-btn {
+  padding: 12px 24px;
+  background-color: #34c759;
+  color: white;
+  border-radius: 24px;
+}
+
+.shortcut-hint {
+  font-size: 12px;
+  color: #999;
+}
+
+.voice-error {
+  margin-top: 12px;
+  padding: 8px 12px;
+  background-color: #ffebee;
+  color: #c62828;
+  border-radius: 6px;
+}
+```
+
 ## Build Instructions
 
 ### Prerequisites
@@ -910,6 +1153,41 @@ cd src-tauri && cargo clean && cd ..
 - Entries without valid dates sorted by filename
 - Scroll sidebar when entries exceed viewport
 
+### Voice Features
+
+#### First-Time Setup (Download Whisper Model)
+
+1. Select or create a journal entry
+2. In the editor header, click green "Download Whisper Model" button
+3. Wait for download to complete (~142MB, progress shown)
+4. Button changes to "Hold to Record" when ready
+
+#### Push-to-Talk Recording (Button)
+
+1. Select an entry to record into
+2. Click and **hold** the "Hold to Record" button
+3. Speak while holding the button
+4. Recording timer shows duration (e.g., "0:15")
+5. **Release** the button to stop recording
+6. Button shows "Transcribing..." while processing
+7. Transcribed text appends to entry content
+
+#### Push-to-Talk Recording (Keyboard)
+
+1. Select an entry to record into
+2. **Hold** `Cmd+Shift+R` (works globally, even when app not focused)
+3. Speak while holding the keys
+4. **Release** to stop and transcribe
+5. Text appends to entry content
+
+#### Import Voice Memo
+
+1. Select an entry to import into
+2. Click "Import Audio" button in sidebar
+3. Select audio file (MP3, M4A, WAV, OGG, FLAC, AAC)
+4. Button shows "Transcribing..." while processing
+5. Transcribed text appends to entry content
+
 ## Error Handling
 
 ### Backend Errors
@@ -1002,7 +1280,28 @@ try {
 - [ ] Placeholder text visible when empty
 - [ ] Saving indicator appears during save
 
-## Future Enhancements (Not in V1)
+### Voice Features
+- [ ] "Download Whisper Model" button appears on first run
+- [ ] Download progress shows percentage
+- [ ] After download, "Hold to Record" button appears
+- [ ] Hold button starts recording (red with pulse animation)
+- [ ] Recording timer displays correctly (0:00 format)
+- [ ] Release button stops recording
+- [ ] "Transcribing..." state shows during processing
+- [ ] Transcribed text appends to entry content
+- [ ] `Cmd+Shift+R` shortcut starts recording when held
+- [ ] `Cmd+Shift+R` works even when app not focused
+- [ ] "Import Audio" button opens file dialog
+- [ ] MP3 files import and transcribe correctly
+- [ ] M4A files import and transcribe correctly
+- [ ] WAV files import and transcribe correctly
+- [ ] Buttons disabled when no entry selected
+- [ ] Error messages display in red banner
+- [ ] First transcription loads model (brief delay)
+- [ ] Subsequent transcriptions are faster (model cached)
+- [ ] macOS microphone permission prompt appears
+
+## Future Enhancements
 
 1. **Security**: Touch ID, encryption, password protection
 2. **Search**: Full-text search across entries
@@ -1014,6 +1313,7 @@ try {
 8. **Cloud Sync**: Optional iCloud/Dropbox sync
 9. **Templates**: Pre-defined entry templates
 10. **Calendar**: Date-based navigation
+11. **Voice Enhancements**: Configurable keyboard shortcut, different Whisper model sizes, real-time transcription preview
 
 ## File System Details
 
@@ -1021,6 +1321,8 @@ try {
 
 ```
 ~/Documents/Project Data Files/Journal/
+├── models/
+│   └── ggml-base.en.bin        # Whisper model (~142MB)
 ├── January 1, 2026.md
 ├── My First Entry.md
 ├── Weekend Thoughts.md
@@ -1133,7 +1435,13 @@ For distribution outside Mac App Store:
 
 ## Version History
 
-### v1.0 (Current)
+### v1.1 (Current)
+- Voice memo import (MP3, M4A, WAV, OGG, FLAC, AAC)
+- Push-to-talk dictation with local Whisper transcription
+- Global keyboard shortcut (Cmd+Shift+R)
+- On-demand Whisper model download
+
+### v1.0
 - Initial release
 - Core journaling functionality
 - Blog-style editor

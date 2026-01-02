@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
+import { useWhisperModel } from "./hooks/useWhisperModel";
+import { useVoiceRecording } from "./hooks/useVoiceRecording";
+import { useAudioImport } from "./hooks/useAudioImport";
 
 interface EntryMetadata {
   title: string;
@@ -44,6 +47,50 @@ function App() {
   const [content, setContent] = useState<string>("");
   const [isSaving, setIsSaving] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+
+  // Handle transcription result - append to content
+  const handleTranscription = useCallback((text: string) => {
+    if (!selectedEntry) return;
+    setContent((prev) => {
+      const separator = prev.trim() ? "\n\n" : "";
+      return prev + separator + text;
+    });
+  }, [selectedEntry]);
+
+  // Whisper model management
+  const {
+    isModelReady,
+    isDownloading,
+    downloadProgress,
+    downloadModel,
+    error: modelError,
+  } = useWhisperModel();
+
+  // Voice recording hook
+  const {
+    isRecording,
+    isTranscribing,
+    formattedDuration,
+    startRecording,
+    stopRecording,
+    error: recordingError,
+  } = useVoiceRecording({
+    onTranscription: handleTranscription,
+    isModelReady,
+  });
+
+  // Audio import hook
+  const {
+    importAudioFile,
+    isImporting,
+    error: importError,
+  } = useAudioImport({
+    onTranscription: handleTranscription,
+    isModelReady,
+  });
+
+  // Combined error message
+  const voiceError = modelError || recordingError || importError;
 
   // Load all entries on mount
   useEffect(() => {
@@ -175,6 +222,14 @@ function App() {
           <button className="new-entry-btn" onClick={createNewEntry}>
             + New Entry
           </button>
+          <button
+            className="import-audio-btn"
+            onClick={importAudioFile}
+            disabled={!isModelReady || isImporting || !selectedEntry}
+            title={!isModelReady ? "Download Whisper model first" : !selectedEntry ? "Select an entry first" : "Import voice memo"}
+          >
+            {isImporting ? "Transcribing..." : "Import Audio"}
+          </button>
         </div>
         <div className="entry-list">
           {entries.map((entry) => (
@@ -229,6 +284,45 @@ function App() {
                   placeholder="Date"
                 />
                 {isSaving && <div className="saving-indicator">Saving...</div>}
+
+                {/* Voice Controls */}
+                <div className="voice-controls">
+                  {!isModelReady ? (
+                    <button
+                      className="download-model-btn"
+                      onClick={downloadModel}
+                      disabled={isDownloading}
+                    >
+                      {isDownloading
+                        ? `Downloading... ${downloadProgress}%`
+                        : "Download Whisper Model"}
+                    </button>
+                  ) : (
+                    <button
+                      className={`record-btn ${isRecording ? "recording" : ""}`}
+                      onMouseDown={startRecording}
+                      onMouseUp={stopRecording}
+                      onMouseLeave={isRecording ? stopRecording : undefined}
+                      disabled={isTranscribing}
+                    >
+                      {isTranscribing ? (
+                        "Transcribing..."
+                      ) : isRecording ? (
+                        <>Recording {formattedDuration}</>
+                      ) : (
+                        "Hold to Record"
+                      )}
+                    </button>
+                  )}
+                  {isModelReady && (
+                    <span className="shortcut-hint">or hold Cmd+Shift+R</span>
+                  )}
+                </div>
+
+                {/* Error display */}
+                {voiceError && (
+                  <div className="voice-error">{voiceError}</div>
+                )}
               </div>
               <div className="blog-content">
                 <textarea

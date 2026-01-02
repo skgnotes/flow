@@ -322,3 +322,133 @@ body {
 .modal-btn-delete:hover {
   background-color: #e0352b;
 }
+
+/* ============================================================================
+   Voice Controls
+   ============================================================================ */
+
+.voice-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+}
+
+.record-btn {
+  padding: 12px 24px;
+  background-color: #007aff;
+  color: white;
+  border: none;
+  border-radius: 24px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: all 0.2s;
+}
+
+.record-btn:hover:not(:disabled) {
+  background-color: #0051d5;
+}
+
+.record-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.record-btn.recording {
+  background-color: #ff3b30;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.record-btn.recording::before {
+  content: '';
+  width: 10px;
+  height: 10px;
+  background-color: white;
+  border-radius: 50%;
+  animation: blink 1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.9;
+    transform: scale(1.02);
+  }
+}
+
+@keyframes blink {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.shortcut-hint {
+  font-size: 12px;
+  color: #999;
+}
+
+/* Import Audio Button */
+.import-audio-btn {
+  width: 100%;
+  padding: 8px 16px;
+  background-color: #5856d6;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  margin-top: 8px;
+  transition: all 0.2s;
+}
+
+.import-audio-btn:hover:not(:disabled) {
+  background-color: #4240a8;
+}
+
+.import-audio-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Download Model Button */
+.download-model-btn {
+  padding: 12px 24px;
+  background-color: #34c759;
+  color: white;
+  border: none;
+  border-radius: 24px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: all 0.2s;
+}
+
+.download-model-btn:hover:not(:disabled) {
+  background-color: #28a745;
+}
+
+.download-model-btn:disabled {
+  opacity: 0.7;
+  cursor: wait;
+}
+
+/* Voice Error Message */
+.voice-error {
+  margin-top: 12px;
+  padding: 8px 12px;
+  background-color: #ffebee;
+  color: #c62828;
+  border-radius: 6px;
+  font-size: 13px;
+}

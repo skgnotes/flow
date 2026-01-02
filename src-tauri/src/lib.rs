@@ -1,7 +1,24 @@
+mod audio_import;
+mod audio_recorder;
+mod transcription;
+pub mod whisper_model;
+
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use chrono::Local;
 use serde::{Serialize, Deserialize};
+use tauri::State;
+
+use audio_recorder::SharedSamples;
+use std::sync::Arc;
+use std::thread::JoinHandle;
+
+// Global recorder state - thread-safe shared samples
+pub struct RecorderState {
+    pub shared: Arc<SharedSamples>,
+    pub handle: Mutex<Option<JoinHandle<()>>>,
+}
 
 #[derive(Serialize, Deserialize)]
 struct EntryInfo {
@@ -225,19 +242,88 @@ fn delete_entry(filename: String) -> Result<(), String> {
     fs::remove_file(&file_path).map_err(|e| e.to_string())
 }
 
+// ============================================================================
+// Voice Recording & Transcription Commands
+// ============================================================================
+
+#[tauri::command]
+fn start_recording(state: State<RecorderState>) -> Result<(), String> {
+    let mut handle_guard = state.handle.lock().map_err(|e| format!("Lock error: {}", e))?;
+
+    if handle_guard.is_some() {
+        return Err("Already recording".to_string());
+    }
+
+    // Start recording in a background thread
+    let handle = audio_recorder::start_recording_thread(state.shared.clone())?;
+    *handle_guard = Some(handle);
+
+    Ok(())
+}
+
+#[tauri::command]
+fn stop_recording_and_transcribe(state: State<RecorderState>) -> Result<String, String> {
+    // Signal to stop recording
+    state.shared.stop_recording();
+
+    // Wait for the recording thread to finish
+    let mut handle_guard = state.handle.lock().map_err(|e| format!("Lock error: {}", e))?;
+    if let Some(handle) = handle_guard.take() {
+        handle.join().map_err(|_| "Recording thread panicked")?;
+    }
+
+    // Get the recorded samples
+    let samples = state.shared.get_samples();
+
+    if samples.is_empty() {
+        return Err("No audio was recorded".to_string());
+    }
+
+    // Transcribe the audio
+    transcription::transcribe_audio(&samples)
+}
+
+#[tauri::command]
+fn transcribe_audio_file(path: String) -> Result<String, String> {
+    let path = std::path::Path::new(&path);
+
+    if !path.exists() {
+        return Err("Audio file not found".to_string());
+    }
+
+    // Convert audio to Whisper format
+    let samples = audio_import::convert_to_whisper_format(path)?;
+
+    // Transcribe
+    transcription::transcribe_audio(&samples)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .manage(RecorderState {
+            shared: SharedSamples::new(),
+            handle: Mutex::new(None),
+        })
         .invoke_handler(tauri::generate_handler![
+            // Journal commands
             list_entries,
             read_entry,
             save_entry,
             create_entry,
             rename_entry,
             update_entry_metadata,
-            delete_entry
+            delete_entry,
+            // Voice commands
+            whisper_model::check_whisper_model,
+            whisper_model::download_whisper_model,
+            start_recording,
+            stop_recording_and_transcribe,
+            transcribe_audio_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
